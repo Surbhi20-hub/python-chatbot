@@ -4,6 +4,10 @@ from nicegui import ui, app
 
 BACKEND_URL = "http://localhost:8000/chat"
 
+# In-memory flag: resets every time you (re)run `python app.py`,
+# but stays True across page refreshes within the same running app.
+_greeted_once = False
+
 LANGUAGES = [
     {"code": "en", "label": "English", "greeting": "Hi"},
     {"code": "hi", "label": "Hindi", "greeting": "Namaste"},
@@ -198,8 +202,6 @@ def main_page():
         storage["dark"] = False
     if "language" not in storage:
         storage["language"] = "en"
-    if "greeted_once" not in storage:
-        storage["greeted_once"] = False
 
     # Always start a brand-new (unsaved) chat whenever the app runs or the page refreshes
     draft = new_session()
@@ -381,10 +383,14 @@ def main_page():
                             history = [{"role": m["role"], "text": m.get("text", "")} for m in sess["messages"]]
 
                             image_data = [a["data"] for a in pending_attachments if a["type"].startswith("image/")]
-                            other_files = [a["name"] for a in pending_attachments if not a["type"].startswith("image/")]
+                            doc_files = [
+                                {"name": a["name"], "type": a["type"], "data": a["data"]}
+                                for a in pending_attachments if not a["type"].startswith("image/")
+                            ]
+                            other_names = [f["name"] for f in doc_files]
                             display_text = msg
-                            if other_files:
-                                note = " (attached: " + ", ".join(other_files) + ")"
+                            if other_names:
+                                note = " (attached: " + ", ".join(other_names) + ")"
                                 display_text = (msg + note) if msg else note.strip()
 
                             sess["messages"].append(
@@ -410,6 +416,7 @@ def main_page():
                                         "history": history,
                                         "language": storage["language"],
                                         "images": image_data,
+                                        "files": doc_files,
                                     },
                                     timeout=60,
                                 )
@@ -430,7 +437,17 @@ def main_page():
                                 text_input.value = (text_input.value or "") + transcript
                                 ui.timer(0.05, send, once=True)
 
+                        def on_voice_error(e):
+                            err = e.args if isinstance(e.args, str) else (e.args[0] if e.args else "")
+                            if err == "not-allowed":
+                                ui.notify("Microphone permission was blocked. Allow it in your browser and click the mic again.", type="warning")
+                            elif err == "no-speech":
+                                ui.notify("Didn't catch that — try again.", type="warning")
+                            elif err:
+                                ui.notify(f"Voice input error: {err}", type="warning")
+
                         ui.on("voice_result", on_voice_result)
+                        ui.on("voice_error", on_voice_error)
 
                         ui.html(f"""
                             <button id="{mic_btn_id}" class="mic-btn material-icons"
@@ -450,8 +467,8 @@ def main_page():
                                     emitEvent('voice_result', event.results[0][0].transcript);
                                 }};
                                 rec.onerror = (event) => {{
-                                    console.log('Speech recognition error:', event.error);
                                     btn.classList.remove('recording');
+                                    emitEvent('voice_error', event.error);
                                 }};
                                 rec.onend = () => {{ btn.classList.remove('recording'); }};
                                 rec.start();
@@ -475,8 +492,9 @@ def main_page():
         """)
         ui.timer(2.6, lambda: char_container.classes(replace="character-wrap small"), once=True)
 
-    if not storage["greeted_once"]:
-        storage["greeted_once"] = True
+    global _greeted_once
+    if not _greeted_once:
+        _greeted_once = True
         ui.timer(0.3, greet, once=True)
 
 

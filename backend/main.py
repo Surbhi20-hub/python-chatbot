@@ -1,3 +1,5 @@
+import base64
+import io
 import os
 import requests
 from fastapi import FastAPI
@@ -13,11 +15,6 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 app = FastAPI()
 
-# NOTE: this currently has no effect, since the NiceGUI frontend calls this
-# backend server-side via the `requests` library (send() -> requests.post(...)),
-# not from browser JavaScript. CORS only matters for real browser fetch/XHR
-# calls. Left in place in case you later add a JS-based frontend that calls
-# this API directly from the browser.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[FRONTEND_ORIGIN],
@@ -32,15 +29,48 @@ class Message(BaseModel):
     text: str
 
 
+class FileAttachment(BaseModel):
+    name: str
+    type: str
+    data: str  # base64 data URL, e.g. "data:application/pdf;base64,...."
+
+
 class ChatRequest(BaseModel):
     message: str
     history: list[Message] = []
     language: str = "en"
-    # FIX: this field didn't exist before, so Pydantic silently dropped any
-    # "images" key sent by the frontend and attachments were never seen by
-    # the model. Each entry is a data: URI (base64) as produced by the
-    # frontend's FileReader.readAsDataURL().
-    images: list[str] = []
+    images: list[str] = []  # base64 data URLs, e.g. "data:image/png;base64,...."
+    files: list[FileAttachment] = []
+
+
+def extract_file_text(f: FileAttachment) -> str:
+    """Decode a base64 data URL and pull out readable text, per file type."""
+    try:
+        raw_b64 = f.data.split(",", 1)[1] if "," in f.data else f.data
+        raw_bytes = base64.b64decode(raw_b64)
+
+        if f.type == "text/plain" or f.name.lower().endswith(".txt"):
+            return raw_bytes.decode("utf-8", errors="ignore")
+
+        if f.type == "application/pdf" or f.name.lower().endswith(".pdf"):
+            try:
+                from pypdf import PdfReader
+            except ImportError:
+                return "[Could not read PDF: install with 'pip install pypdf']"
+            reader = PdfReader(io.BytesIO(raw_bytes))
+            return "\n".join(page.extract_text() or "" for page in reader.pages)
+
+        if f.name.lower().endswith(".docx"):
+            try:
+                import docx
+            except ImportError:
+                return "[Could not read .docx: install with 'pip install python-docx']"
+            document = docx.Document(io.BytesIO(raw_bytes))
+            return "\n".join(p.text for p in document.paragraphs)
+
+        return f"[Unsupported file type: {f.type or 'unknown'}]"
+    except Exception as e:
+        return f"[Could not read file {f.name}: {e}]"
 
 
 LANGUAGE_NAMES = {
@@ -62,28 +92,23 @@ def chat(req: ChatRequest):
     ]
     messages += [{"role": m.role, "content": m.text} for m in req.history]
 
-    # FIX: when images are attached, build a multimodal content array
-    # (OpenRouter/OpenAI-style: a list of {type: text|image_url} blocks)
-    # instead of a plain string, so the model actually receives them.
-    # NOTE: this only works if OPENROUTER_MODEL below points at a
-    # vision-capable model.
+    user_text = req.message
+    if req.files:
+        file_sections = []
+        for f in req.files:
+            extracted = extract_file_text(f)
+            # Keep each file's content within a reasonable size so the request stays small
+            extracted = extracted[:8000]
+            file_sections.append(f"--- Content of {f.name} ---\n{extracted}")
+        user_text = user_text + "\n\n" + "\n\n".join(file_sections)
+
     if req.images:
-        content = [{"type": "text", "text": req.message}]
+        content = [{"type": "text", "text": user_text}]
         for img in req.images:
             content.append({"type": "image_url", "image_url": {"url": img}})
         messages.append({"role": "user", "content": content})
     else:
-        messages.append({"role": "user", "content": req.message})
-
-    # FIX: specific free-tier model slugs on OpenRouter (like the previous
-    # "google/gemini-2.0-flash-exp:free") get retired/rotated out with little
-    # notice, which is what caused the 404 you hit. "openrouter/free" is
-    # OpenRouter's own router: it automatically picks from whichever free
-    # models are currently live, and filters for the features you need
-    # (image understanding, tool calling), so it won't go stale the same way.
-    # If you'd rather pin a specific paid model for reliability/quality,
-    # check https://openrouter.ai/models for a current id and swap it in.
-    OPENROUTER_MODEL = "openrouter/free"
+        messages.append({"role": "user", "content": user_text})
 
     try:
         res = requests.post(
@@ -93,7 +118,7 @@ def chat(req: ChatRequest):
                 "Content-Type": "application/json",
             },
             json={
-                "model": OPENROUTER_MODEL,
+                "model": "google/gemini-3.6-flash",
                 "messages": messages,
                 "max_tokens": 1024,
             },
