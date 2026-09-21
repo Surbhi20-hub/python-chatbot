@@ -1,5 +1,5 @@
 import uuid
-import requests
+import httpx
 from nicegui import ui, app
 
 BACKEND_URL = "http://localhost:8000/chat"
@@ -409,17 +409,17 @@ def main_page():
                             render_history.refresh()
 
                             try:
-                                res = requests.post(
-                                    BACKEND_URL,
-                                    json={
-                                        "message": msg or "Please describe the attached content.",
-                                        "history": history,
-                                        "language": storage["language"],
-                                        "images": image_data,
-                                        "files": doc_files,
-                                    },
-                                    timeout=60,
-                                )
+                                async with httpx.AsyncClient(timeout=90) as client:
+                                    res = await client.post(
+                                        BACKEND_URL,
+                                        json={
+                                            "message": msg or "Please describe the attached content.",
+                                            "history": history,
+                                            "language": storage["language"],
+                                            "images": image_data,
+                                            "files": doc_files,
+                                        },
+                                    )
                                 reply = res.json().get("reply", "Error: no reply")
                             except Exception as ex:
                                 reply = f"Error: {ex}"
@@ -453,25 +453,34 @@ def main_page():
                             <button id="{mic_btn_id}" class="mic-btn material-icons"
                                 style="font-family:'Material Icons','Material Icons Round',sans-serif; font-weight:normal; font-style:normal; line-height:1; letter-spacing:normal; text-transform:none; white-space:nowrap; word-wrap:normal; direction:ltr; -webkit-font-feature-settings:'liga'; font-feature-settings:'liga';"
                                 title="Voice input" type="button" onclick="
-                                if (!('webkitSpeechRecognition' in window)) {{
+                                const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+                                if (!SR) {{
                                     alert('Voice input is not supported in this browser. Please use Chrome or Edge.');
                                     return;
                                 }}
                                 const btn = document.getElementById('{mic_btn_id}');
-                                const rec = new webkitSpeechRecognition();
+                                if (btn.classList.contains('recording')) {{ return; }}
+                                const rec = new SR();
                                 rec.lang = window.__voiceLang || 'en-IN';
+                                rec.continuous = false;
                                 rec.interimResults = false;
                                 rec.maxAlternatives = 1;
                                 btn.classList.add('recording');
                                 rec.onresult = (event) => {{
-                                    emitEvent('voice_result', event.results[0][0].transcript);
+                                    if (typeof emitEvent === 'function') {{
+                                        emitEvent('voice_result', event.results[0][0].transcript);
+                                    }}
                                 }};
                                 rec.onerror = (event) => {{
                                     btn.classList.remove('recording');
-                                    emitEvent('voice_error', event.error);
+                                    if (typeof emitEvent === 'function') {{
+                                        emitEvent('voice_error', event.error);
+                                    }}
                                 }};
                                 rec.onend = () => {{ btn.classList.remove('recording'); }};
-                                rec.start();
+                                try {{ rec.start(); }} catch (err) {{
+                                    btn.classList.remove('recording');
+                                }}
                             ">mic</button>
                         """)
 
@@ -480,12 +489,14 @@ def main_page():
     def greet():
         lang = next(l for l in LANGUAGES if l["code"] == storage["language"])
         char_container.classes(replace="character-wrap greeting")
-        voice_lang = VOICE_LANG_MAP.get(storage["language"], "en-IN")
+        # Always use the same fixed voice/accent (en-IN) to say the greeting,
+        # regardless of the selected UI language, so "Hi", "Namaste" and
+        # "Namaskar" all sound like the same voice rather than switching accents.
         ui.run_javascript(f"""
             const u = new SpeechSynthesisUtterance("{lang['greeting']}");
-            u.lang = "{voice_lang}";
+            u.lang = "en-IN";
             const voices = speechSynthesis.getVoices();
-            const v = voices.find(v => v.lang === "{voice_lang}") || voices.find(v => v.lang.startsWith("en")) || voices[0];
+            const v = voices.find(v => v.lang === "en-IN") || voices.find(v => v.lang.startsWith("en")) || voices[0];
             if (v) u.voice = v;
             speechSynthesis.cancel();
             speechSynthesis.speak(u);

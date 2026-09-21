@@ -1,2 +1,2 @@
 nicegui
-requests
+httpx
