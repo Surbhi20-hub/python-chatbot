@@ -141,8 +141,9 @@ html, body { height: 100%; margin: 0; overflow: hidden; font-family: -apple-syst
 .attach-btn { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); width: 42px; height: 42px; min-width: 42px; border-radius: 12px; padding: 0; z-index: 3; }
 .mic-btn {
   position: absolute; right: 58px; top: 50%; transform: translateY(-50%); width: 40px; height: 40px;
-  min-width: 40px; border-radius: 50%; padding: 0; z-index: 3; border: none; background: transparent;
+  min-width: 40px; border-radius: 50%; padding: 0; z-index: 10; border: none; background: transparent;
   display: flex; align-items: center; justify-content: center; cursor: pointer; color: #555; font-size: 22px;
+  pointer-events: auto;
 }
 .mic-btn:hover { background: rgba(0,0,0,0.08); }
 .mic-btn.recording { color: #ff5f5f; background: rgba(255,95,95,0.12); }
@@ -452,36 +453,53 @@ def main_page():
                         ui.html(f"""
                             <button id="{mic_btn_id}" class="mic-btn material-icons"
                                 style="font-family:'Material Icons','Material Icons Round',sans-serif; font-weight:normal; font-style:normal; line-height:1; letter-spacing:normal; text-transform:none; white-space:nowrap; word-wrap:normal; direction:ltr; -webkit-font-feature-settings:'liga'; font-feature-settings:'liga';"
-                                title="Voice input" type="button" onclick="
-                                const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-                                if (!SR) {{
-                                    alert('Voice input is not supported in this browser. Please use Chrome or Edge.');
-                                    return;
+                                title="Voice input" type="button">mic</button>
+                        """)
+
+                        ui.add_body_html(f"""
+                            <script>
+                            (function() {{
+                                function wireMicButton() {{
+                                    var btn = document.getElementById('{mic_btn_id}');
+                                    if (!btn || btn.dataset.wired) return;
+                                    btn.dataset.wired = '1';
+                                    btn.addEventListener('click', function() {{
+                                        var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+                                        if (!SR) {{
+                                            alert('Voice input is not supported in this browser. Please use Chrome or Edge.');
+                                            return;
+                                        }}
+                                        if (btn.classList.contains('recording')) return;
+                                        var rec = new SR();
+                                        rec.lang = window.__voiceLang || 'en-IN';
+                                        rec.continuous = false;
+                                        rec.interimResults = false;
+                                        rec.maxAlternatives = 1;
+                                        btn.classList.add('recording');
+                                        rec.onresult = function(event) {{
+                                            if (typeof emitEvent === 'function') {{
+                                                emitEvent('voice_result', event.results[0][0].transcript);
+                                            }}
+                                        }};
+                                        rec.onerror = function(event) {{
+                                            btn.classList.remove('recording');
+                                            if (typeof emitEvent === 'function') {{
+                                                emitEvent('voice_error', event.error);
+                                            }}
+                                        }};
+                                        rec.onend = function() {{ btn.classList.remove('recording'); }};
+                                        try {{ rec.start(); }} catch (err) {{ btn.classList.remove('recording'); }}
+                                    }});
                                 }}
-                                const btn = document.getElementById('{mic_btn_id}');
-                                if (btn.classList.contains('recording')) {{ return; }}
-                                const rec = new SR();
-                                rec.lang = window.__voiceLang || 'en-IN';
-                                rec.continuous = false;
-                                rec.interimResults = false;
-                                rec.maxAlternatives = 1;
-                                btn.classList.add('recording');
-                                rec.onresult = (event) => {{
-                                    if (typeof emitEvent === 'function') {{
-                                        emitEvent('voice_result', event.results[0][0].transcript);
-                                    }}
-                                }};
-                                rec.onerror = (event) => {{
-                                    btn.classList.remove('recording');
-                                    if (typeof emitEvent === 'function') {{
-                                        emitEvent('voice_error', event.error);
-                                    }}
-                                }};
-                                rec.onend = () => {{ btn.classList.remove('recording'); }};
-                                try {{ rec.start(); }} catch (err) {{
-                                    btn.classList.remove('recording');
-                                }}
-                            ">mic</button>
+                                var tries = 0;
+                                var timer = setInterval(function() {{
+                                    tries++;
+                                    var btn = document.getElementById('{mic_btn_id}');
+                                    if (btn) {{ wireMicButton(); clearInterval(timer); }}
+                                    if (tries > 40) clearInterval(timer);
+                                }}, 100);
+                            }})();
+                            </script>
                         """)
 
                         ui.button(icon="send", on_click=send).classes("send-btn-inside")
