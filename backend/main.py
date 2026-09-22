@@ -5,10 +5,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
+load_dotenv()
+
 from file_utils import FileAttachment, extract_file_text
 from openrouter_client import ask_openrouter, build_system_message
-
-load_dotenv()
 
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:8501")
 
