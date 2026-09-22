@@ -1,17 +1,16 @@
-import base64
-import io
 import os
-import requests
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
+from file_utils import FileAttachment, extract_file_text
+from openrouter_client import ask_openrouter, build_system_message
+
 load_dotenv()
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:8501")
 
 app = FastAPI()
 
@@ -29,12 +28,6 @@ class Message(BaseModel):
     text: str
 
 
-class FileAttachment(BaseModel):
-    name: str
-    type: str
-    data: str  # base64 data URL, e.g. "data:application/pdf;base64,...."
-
-
 class ChatRequest(BaseModel):
     message: str
     history: list[Message] = []
@@ -43,53 +36,9 @@ class ChatRequest(BaseModel):
     files: list[FileAttachment] = []
 
 
-def extract_file_text(f: FileAttachment) -> str:
-    """Decode a base64 data URL and pull out readable text, per file type."""
-    try:
-        raw_b64 = f.data.split(",", 1)[1] if "," in f.data else f.data
-        raw_bytes = base64.b64decode(raw_b64)
-
-        if f.type == "text/plain" or f.name.lower().endswith(".txt"):
-            return raw_bytes.decode("utf-8", errors="ignore")
-
-        if f.type == "application/pdf" or f.name.lower().endswith(".pdf"):
-            try:
-                from pypdf import PdfReader
-            except ImportError:
-                return "[Could not read PDF: install with 'pip install pypdf']"
-            reader = PdfReader(io.BytesIO(raw_bytes))
-            return "\n".join(page.extract_text() or "" for page in reader.pages)
-
-        if f.name.lower().endswith(".docx"):
-            try:
-                import docx
-            except ImportError:
-                return "[Could not read .docx: install with 'pip install python-docx']"
-            document = docx.Document(io.BytesIO(raw_bytes))
-            return "\n".join(p.text for p in document.paragraphs)
-
-        return f"[Unsupported file type: {f.type or 'unknown'}]"
-    except Exception as e:
-        return f"[Could not read file {f.name}: {e}]"
-
-
-LANGUAGE_NAMES = {
-    "en": "English",
-    "hi": "Hindi",
-    "mr": "Marathi",
-}
-
-
 @app.post("/chat")
 def chat(req: ChatRequest):
-    lang_name = LANGUAGE_NAMES.get(req.language, "English")
-
-    messages = [
-        {
-            "role": "system",
-            "content": f"You are a helpful assistant. Always reply only in {lang_name}, using natural {lang_name} script/spelling, regardless of what language the user writes in.",
-        }
-    ]
+    messages = [build_system_message(req.language)]
     messages += [{"role": m.role, "content": m.text} for m in req.history]
 
     user_text = req.message
@@ -110,27 +59,8 @@ def chat(req: ChatRequest):
     else:
         messages.append({"role": "user", "content": user_text})
 
-    try:
-        res = requests.post(
-            OPENROUTER_URL,
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "google/gemini-3.6-flash",
-                "messages": messages,
-                "max_tokens": 1024,
-            },
-            timeout=30,
-        )
-        if res.status_code != 200:
-            return {"reply": f"Error {res.status_code}: {res.text}"}
-        data = res.json()
-        reply = data["choices"][0]["message"]["content"]
-        return {"reply": reply}
-    except Exception as e:
-        return {"reply": f"Error: {str(e)}"}
+    reply = ask_openrouter(messages)
+    return {"reply": reply}
 
 
 @app.get("/")
