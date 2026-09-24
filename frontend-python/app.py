@@ -111,8 +111,8 @@ html, body { height: 100%; margin: 0; overflow: hidden; font-family: -apple-syst
 }
 .mind-prompt.hidden { opacity: 0; }
 
-.messages-area { max-height: 0; opacity: 0; overflow-y: auto; transition: all 0.5s ease; width: 100%; padding: 40px 48px 16px; }
-.messages-area.visible { flex: 1; max-height: 100%; opacity: 1; }
+.messages-area { flex: 0 0 auto; max-height: 0; opacity: 0; overflow-y: auto; transition: opacity 0.4s ease; width: 100%; padding: 40px 48px 16px; }
+.messages-area.visible { flex: 1 1 0; max-height: none; min-height: 0; height: 0; overflow-y: scroll; opacity: 1; }
 
 .msg-row { width: 100%; max-width: 860px; margin: 16px auto; }
 .msg-row.user { justify-content: flex-end; }
@@ -315,7 +315,7 @@ def main_page():
                         on_change=on_lang_change,
                     ).classes("lang-select")
 
-            messages_box = ui.column().classes("messages-area")
+            messages_box = ui.column().classes("messages-area").props("id=messages-box")
             mind_prompt = ui.label("What's on your mind?").classes("mind-prompt")
             input_row = ui.row().classes("input-area centered")
 
@@ -335,6 +335,11 @@ def main_page():
                                     ui.label(m["text"])
                                 for img in m.get("images", []):
                                     ui.image(img).classes("msg-img")
+                if has_started:
+                    ui.timer(0.05, lambda: ui.run_javascript(
+                        "const el = document.getElementById('messages-box'); "
+                        "if (el) { el.scrollTop = el.scrollHeight; }"
+                    ), once=True)
 
             render_chat()
 
@@ -372,8 +377,8 @@ def main_page():
                             "flat round dense"
                         ).classes("attach-btn")
 
-                        text_input = ui.input(placeholder="Type your message...").classes("chat-input").props(
-                            "debounce=0 outlined id=chat-native-input"
+                        text_input = ui.textarea(placeholder="Type your message...").classes("chat-input").props(
+                            "debounce=0 outlined autogrow id=chat-native-input"
                         )
 
                         async def send(e=None):
@@ -381,7 +386,10 @@ def main_page():
                             if not msg and not pending_attachments:
                                 return
                             sess = current_session()
-                            history = [{"role": m["role"], "text": m.get("text", "")} for m in sess["messages"]]
+                            # Only send the most recent messages as context — sending the
+                            # entire conversation on every turn makes requests (and therefore
+                            # replies) progressively slower as a chat grows longer.
+                            history = [{"role": m["role"], "text": m.get("text", "")} for m in sess["messages"]][-16:]
 
                             image_data = [a["data"] for a in pending_attachments if a["type"].startswith("image/")]
                             doc_files = [
@@ -428,7 +436,7 @@ def main_page():
                             sess["messages"].append({"role": "assistant", "text": reply})
                             render_chat.refresh()
 
-                        text_input.on("keydown.enter", send)
+                        text_input.on("keydown.enter.prevent", send)
 
                         mic_btn_id = "mic-native-btn"
 
