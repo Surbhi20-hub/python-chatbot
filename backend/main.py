@@ -1,3 +1,4 @@
+
 import os
 
 from fastapi import FastAPI
@@ -8,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from file_utils import FileAttachment, extract_file_text
-from openrouter_client import ask_openrouter, build_system_message
+from openrouter_client import ask_openrouter
 
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:8501")
 
@@ -23,14 +24,9 @@ app.add_middleware(
 )
 
 
-class Message(BaseModel):
-    role: str  # "user" or "assistant"
-    text: str
-
-
 class ChatRequest(BaseModel):
     message: str
-    history: list[Message] = []
+    session_id: str  # identifies the conversation; LangChain keeps its memory keyed on this
     language: str = "en"
     images: list[str] = []  # base64 data URLs, e.g. "data:image/png;base64,...."
     files: list[FileAttachment] = []
@@ -38,9 +34,6 @@ class ChatRequest(BaseModel):
 
 @app.post("/chat")
 def chat(req: ChatRequest):
-    messages = [build_system_message(req.language)]
-    messages += [{"role": m.role, "content": m.text} for m in req.history]
-
     user_text = req.message
     if req.files:
         file_sections = []
@@ -51,15 +44,7 @@ def chat(req: ChatRequest):
             file_sections.append(f"--- Content of {f.name} ---\n{extracted}")
         user_text = user_text + "\n\n" + "\n\n".join(file_sections)
 
-    if req.images:
-        content = [{"type": "text", "text": user_text}]
-        for img in req.images:
-            content.append({"type": "image_url", "image_url": {"url": img}})
-        messages.append({"role": "user", "content": content})
-    else:
-        messages.append({"role": "user", "content": user_text})
-
-    reply = ask_openrouter(messages)
+    reply = ask_openrouter(user_text, req.images, req.language, req.session_id)
     return {"reply": reply}
 
 
