@@ -381,15 +381,23 @@ def main_page():
                             "debounce=0 outlined autogrow id=chat-native-input"
                         )
 
+                        sending = {"busy": False}
+
                         async def send(e=None):
                             msg = text_input.value.strip() if text_input.value else ""
                             if not msg and not pending_attachments:
                                 return
+                            # Don't dispatch a second message while the previous one is still
+                            # waiting for its reply (your typed text is left in the box).
+                            if sending["busy"]:
+                                ui.notify("Please wait for the current reply first.", type="info")
+                                return
+                            sending["busy"] = True
                             sess = current_session()
-                            # Only send the most recent messages as context — sending the
-                            # entire conversation on every turn makes requests (and therefore
-                            # replies) progressively slower as a chat grows longer.
-                            history = [{"role": m["role"], "text": m.get("text", "")} for m in sess["messages"]][-16:]
+                            # No need to build/send history anymore — the backend keeps
+                            # conversation memory itself (via LangChain), keyed on this
+                            # chat's own id as the session_id.
+                            session_id = sess["id"]
 
                             image_data = [a["data"] for a in pending_attachments if a["type"].startswith("image/")]
                             doc_files = [
@@ -423,7 +431,7 @@ def main_page():
                                         BACKEND_URL,
                                         json={
                                             "message": msg or "Please describe the attached content.",
-                                            "history": history,
+                                            "session_id": session_id,
                                             "language": storage["language"],
                                             "images": image_data,
                                             "files": doc_files,
@@ -432,6 +440,8 @@ def main_page():
                                 reply = res.json().get("reply", "Error: no reply")
                             except Exception as ex:
                                 reply = f"Error: {ex}"
+                            finally:
+                                sending["busy"] = False
 
                             sess["messages"].append({"role": "assistant", "text": reply})
                             render_chat.refresh()
